@@ -5,11 +5,7 @@ from main import TodoParser
 
 
 def count_issues_for_file_type(raw_issues, file_type):
-    num_issues = 0
-    for issue in raw_issues:
-        if issue.markdown_language == file_type:
-            num_issues += 1
-    return num_issues
+    return sum(issue.markdown_language == file_type for issue in raw_issues)
 
 
 class NewIssueTests(unittest.TestCase):
