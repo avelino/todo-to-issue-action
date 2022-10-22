@@ -113,13 +113,12 @@ class GitHubClient(object):
         title = issue.title
         if len(title) > 80:
             # Title is too long.
-            title = title[:80] + '...'
+            title = f'{title[:80]}...'
         formatted_issue_body = self.line_break.join(issue.body)
         url_to_line = f'https://github.com/{self.repo}/blob/{self.sha}/{issue.file_name}#L{issue.start_line}'
-        snippet = '```' + issue.markdown_language + '\n' + issue.hunk + '\n' + '```'
+        snippet = f'```{issue.markdown_language}' + '\n' + issue.hunk + '\n' + '```'
 
-        issue_template = os.getenv('INPUT_ISSUE_TEMPLATE', None)
-        if issue_template:
+        if issue_template := os.getenv('INPUT_ISSUE_TEMPLATE', None):
             issue_contents = (issue_template.replace('{{ title }}', issue.title)
                               .replace('{{ body }}', formatted_issue_body)
                               .replace('{{ url }}', url_to_line)
@@ -133,7 +132,7 @@ class GitHubClient(object):
         # The below is a simple and imperfect check based on the issue title.
         for existing_issue in self.existing_issues:
             if issue.title == existing_issue['title']:
-                print(f'Skipping issue (already exists).')
+                print('Skipping issue (already exists).')
                 return
 
         new_issue_body = {'title': title, 'body': issue_contents, 'labels': issue.labels}
@@ -184,7 +183,7 @@ class GitHubClient(object):
                 matched += 1
                 # If there are multiple issues with similar titles, don't try and close any.
                 if matched > 1:
-                    print(f'Skipping issue (multiple matches)')
+                    print('Skipping issue (multiple matches)')
                     break
                 issue_number = existing_issue['number']
         else:
@@ -340,7 +339,7 @@ class TodoParser(object):
         file_hunks = re.finditer(self.FILE_HUNK_PATTERN, diff_file.read(), re.DOTALL)
         last_end = None
         extracted_file_hunks = []
-        for i, file_hunk in enumerate(file_hunks):
+        for file_hunk in file_hunks:
             extracted_file_hunks.append(file_hunk.group(0))
             last_end = file_hunk.end()
         diff_file.seek(0)
@@ -355,12 +354,12 @@ class TodoParser(object):
             header_search = re.search(self.HEADER_PATTERN, hunk, re.MULTILINE)
             if not header_search:
                 continue
-            files = header_search.group(0)
+            files = header_search[0]
 
             filename_search = re.search(self.FILENAME_PATTERN, files)
             if not filename_search:
                 continue
-            curr_file = filename_search.group(0)
+            curr_file = filename_search[0]
             if self._should_ignore(curr_file):
                 continue
             curr_markers, curr_markdown_language = self._get_file_details(curr_file)
@@ -372,7 +371,7 @@ class TodoParser(object):
             line_numbers = re.finditer(self.LINE_NUMBERS_PATTERN, hunk)
             for i, line_numbers in enumerate(line_numbers):
                 line_numbers_inner_search = re.search(self.LINE_NUMBERS_INNER_PATTERN, line_numbers.group(0))
-                line_numbers_str = line_numbers_inner_search.group(0).strip('@@ -')
+                line_numbers_str = line_numbers_inner_search[0].strip('@@ -')
                 start_line = line_numbers_str.split(' ')[1].strip('+')
                 start_line = int(start_line.split(',')[0])
 
@@ -389,17 +388,18 @@ class TodoParser(object):
 
                 prev_index = len(code_blocks) - 1
                 # Set the end of the last code block based on the start of this one.
-                if prev_block and prev_block['file'] == block['file']:
-                    code_blocks[prev_index]['hunk_end'] = line_numbers.start()
-                    code_blocks[prev_index]['hunk'] = (prev_block['hunk']
-                                                       [prev_block['hunk_start']:line_numbers.start()])
-                elif prev_block:
-                    code_blocks[prev_index]['hunk'] = prev_block['hunk'][prev_block['hunk_start']:]
+                if prev_block:
+                    if prev_block['file'] == block['file']:
+                        code_blocks[prev_index]['hunk_end'] = line_numbers.start()
+                        code_blocks[prev_index]['hunk'] = (prev_block['hunk']
+                                                           [prev_block['hunk_start']:line_numbers.start()])
+                    else:
+                        code_blocks[prev_index]['hunk'] = prev_block['hunk'][prev_block['hunk_start']:]
 
                 code_blocks.append(block)
                 prev_block = block
 
-        if len(code_blocks) > 0:
+        if code_blocks:
             last_index = len(code_blocks) - 1
             last_block = code_blocks[last_index]
             code_blocks[last_index]['hunk'] = last_block['hunk'][last_block['hunk_start']:]
@@ -407,37 +407,33 @@ class TodoParser(object):
         # Now for each code block, check for comments, then those comments for TODOs.
         for block in code_blocks:
             for marker in block['markers']:
+                extracted_comments = []
                 # Check if there are line or block comments.
                 if marker['type'] == 'line':
                     comment_pattern = r'(^[+\-\s].*' + marker['pattern'] + r'\s.+$)'
                     comments = re.finditer(comment_pattern, block['hunk'], re.MULTILINE)
-                    extracted_comments = []
                     prev_comment = None
                     for i, comment in enumerate(comments):
                         if i == 0 or re.search('|'.join(self.identifiers), comment.group(0)):
                             extracted_comments.append([comment])
-                        else:
-                            if comment.start() == prev_comment.end() + 1:
-                                extracted_comments[len(extracted_comments) - 1].append(comment)
+                        elif comment.start() == prev_comment.end() + 1:
+                            extracted_comments[-1].append(comment)
                         prev_comment = comment
-                    for comment in extracted_comments:
-                        issue = self._extract_issue_if_exists(comment, marker, block)
-                        if issue:
-                            issues.append(issue)
                 else:
                     comment_pattern = (r'(?:[+\-\s]\s*' + marker['pattern']['start'] + r'.*?'
                                        + marker['pattern']['end'] + ')')
                     comments = re.finditer(comment_pattern, block['hunk'], re.DOTALL)
-                    extracted_comments = []
-                    for i, comment in enumerate(comments):
-                        if re.search('|'.join(self.identifiers), comment.group(0)):
-                            extracted_comments.append([comment])
+                    extracted_comments.extend(
+                        [comment]
+                        for comment in comments
+                        if re.search('|'.join(self.identifiers), comment.group(0))
+                    )
 
-                    for comment in extracted_comments:
-                        issue = self._extract_issue_if_exists(comment, marker, block)
-                        if issue:
-                            issues.append(issue)
-
+                for comment in extracted_comments:
+                    if issue := self._extract_issue_if_exists(
+                        comment, marker, block
+                    ):
+                        issues.append(issue)
         default_user_projects = os.getenv('INPUT_USER_PROJECTS', None)
         default_org_projects = os.getenv('INPUT_ORG_PROJECTS', None)
         for i, issue in enumerate(issues):
@@ -481,10 +477,7 @@ class TodoParser(object):
                 cleaned_line = self._clean_line(committed_line, marker)
                 line_title, ref, identifier = self._get_title(cleaned_line)
                 if line_title:
-                    if ref:
-                        issue_title = f'[{ref}] {line_title}'
-                    else:
-                        issue_title = line_title
+                    issue_title = f'[{ref}] {line_title}' if ref else line_title
                     issue = Issue(
                         title=issue_title,
                         labels=['todo'],
@@ -542,13 +535,10 @@ class TodoParser(object):
 
     def _get_line_status(self, comment):
         """Return a Tuple indicating whether this is an addition/deletion/unchanged, plus the cleaned comment."""
-        addition_search = self.ADDITION_PATTERN.search(comment)
-        if addition_search:
+        if addition_search := self.ADDITION_PATTERN.search(comment):
             return LineStatus.ADDED, addition_search.group(0)
-        else:
-            deletion_search = self.DELETION_PATTERN.search(comment)
-            if deletion_search:
-                return LineStatus.DELETED, deletion_search.group(0)
+        if deletion_search := self.DELETION_PATTERN.search(comment):
+            return LineStatus.DELETED, deletion_search.group(0)
         return LineStatus.UNCHANGED, comment[1:]
 
     @staticmethod
@@ -575,18 +565,17 @@ class TodoParser(object):
         title_identifier = None
         for identifier in self.identifiers:
             title_identifier = identifier
-            title_pattern = re.compile(r'(?<=' + identifier + r'[\s:]).+')
-            title_search = title_pattern.search(comment, re.IGNORECASE)
-            if title_search:
-                title = title_search.group(0).strip()
+            title_pattern = re.compile(f'(?<={identifier}' + r'[\s:]).+')
+            if title_search := title_pattern.search(comment, re.IGNORECASE):
+                title = title_search[0].strip()
                 break
             else:
-                title_ref_pattern = re.compile(r'(?<=' + identifier + r'\().+')
-                title_ref_search = title_ref_pattern.search(comment, re.IGNORECASE)
-                if title_ref_search:
-                    title = title_ref_search.group(0).strip()
-                    ref_search = self.REF_PATTERN.search(title)
-                    if ref_search:
+                title_ref_pattern = re.compile(f'(?<={identifier}' + r'\().+')
+                if title_ref_search := title_ref_pattern.search(
+                    comment, re.IGNORECASE
+                ):
+                    title = title_ref_search[0].strip()
+                    if ref_search := self.REF_PATTERN.search(title):
                         ref = ref_search.group(0)
                         title = title.replace(ref, '', 1).lstrip(':) ')
                     break
@@ -635,8 +624,7 @@ class TodoParser(object):
         return projects
 
     def _should_ignore(self, file):
-        ignore_patterns = os.getenv('INPUT_IGNORE', None)
-        if ignore_patterns:
+        if ignore_patterns := os.getenv('INPUT_IGNORE', None):
             for pattern in filter(None, [pattern.strip() for pattern in ignore_patterns.split(',')]):
                 if re.match(pattern, file):
                     return True
